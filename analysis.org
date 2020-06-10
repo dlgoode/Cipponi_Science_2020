@@ -1,0 +1,702 @@
+#+TITLE: Analysis
+#+AUTHOR: Justin Bedő
+#+DATE: 2018-05-03
+#+PROPERTY: header-args :session *R* :eval never-export :exports results
+#+OPTIONS: ^:nil
+#+SETUPFILE: "jquery.org"
+#+latex_compiler: lualatex
+#+LATEX_HEADER: \usepackage[a4paper,left=1cm,right=1cm,top=1cm,bottom=1.62cm]{geometry}
+#+LATEX_HEADER: \usepackage{float}
+#+LATEX_HEADER: \usepackage{unicode-math}
+#+LATEX_HEADER: \usepackage{svg}
+#+LATEX_HEADER: \setmainfont{TeX Gyre Termes}
+#+LATEX_HEADER: \setmathfont{TeX Gyre Termes Math}
+#+LATEX_HEADER: \DeclareMathOperator{\JS}{JS}
+#+LATEX_HEADER: \DeclareMathOperator{\rank}{rank}
+
+* Methods
+
+The data consists of counts that various hairpins for six different samples. Two
+samples are controls ($T₀$ and $T₂$), with the remaining being low/high dose
+Nutlin ($N_L/N_H$), Tunicamycin ($T$), and CDK4i ($C$) conditions. There exists
+a non-injective (and non-surjective) map from hairpins to genes, hence (a subset
+of) genes have 1 or more hairpins associated with them. We use the notation
+$\mathcal{X} := \{T₀, T₂, N_L, N_H, T, C\}$ to refer to the set of counts and
+subscript $x_i$ for $x \in \mathcal{X}$ to refer to the $i^\text{th}$ hairpin
+for $1 ≤ i ≤ n$. The analysis framework is as follows:
+
+Zero counts are first handled by a James–Stein estimator to shrink the counts
+towards a uniform distribution. We use an estimator based on Hausser and Strimmer
+(2009) given by $$ \JS(x) := \left(\frac\lambda n + (1 -
+\lambda)\theta\right)\sum_i x_i,$$ where $$\theta = \frac x {\sum_i x_i},$$
+$$\lambda = \frac{1 - \sum_i \theta_i^2}{(\sum_i x_i - 1)\sum_j (\frac 1n -
+\theta_j)^2},$$ and $n$ is the total number of hairpins.
+
+We further normalised by treating the data as a compositional, using the centred
+log-ratio (clr) transformation (Aitchison 1986). Briefly, the counts are
+normalised by diving with the geometric mean followed by a log transformation:
+$$\widetilde{x}_i := \ln \left(\frac{\JS(x)_i}{\left(\prod_j
+\JS(x)_j\right)^{\frac 1n}}\right)\,\forall x \in \mathcal{X},$$ where $n$ is
+the number of hairpins. We denote by $Δ(a||b)_i := \widetilde{a}_i -
+\widetilde{b}_i$ the difference between the hairpin clr values for
+$a,b\in\mathcal{X}$.
+
+To determine facilitators, we use rank aggregation via copulas (Bedo and
+Ong, 2017) to explicitly search for genes that have some hairpins that are high
+in all high-pressure selective conditions and low in low pressure conditions. In
+brief, Bedo and Ong (2017) showed that the ordering with maximum multivariate
+Spearman's ρ with a set of ranks $π_{\cdot j}$, where $π_{ij} \in (0,1)$
+uniformly and $\sum_j π_{ij} = \frac n2$ for all $i$, is given by the natural
+order of the statistic $r_i := -\sum_j log(\pi_{ij})$. Note that two statistics
+are possible depending on the orientation of the rank in $(0,1)$ corresponding
+to when $0$ represents the ``significant'' or when $1$ does. Intuitively, these
+two measures correspond to placing more emphasis on either when highly ranking
+items ranked ($0$) or lowly ranked items ($1$).
+
+Motivated by this, we define the following statistic to search for facilitators:
+$$ p_G := 1-\Gamma_{|G|}\left(-\sum_{i \in G}\ln
+\left[\Gamma_{5}\left(-\ln\rank\left(1-Δ(T_2||T_0)\right)_i-\ln\rank\left(1-Δ(N_L||T_2)\right)_i-\sum_{x
+\in \{N_H, T, C\}} \ln \rank\left(Δ(x||T_2)\right)_i\right)\right]\right), $$
+where $G$ is the set of hairpins associated with a gene, $\Gamma_d(x) :=
+\frac{\gamma(d, x)}{\Gamma(d)}$ is the cumulative distribution function for the
+Gamma distribution with shape $d$ and scale 1, and $\rank\colon\mathbb{R}^n \to
+(0,1)^n$ uniformly such that $\rank(x)_i \leq \rank(x)_j \iff x_i \leq x_j$.
+Intuitively, this corresponds to searching for genes where some hairpins are
+consistently high across $N_H$, $T$, and $C$ when compared to $T₂$ and low in
+$T₂$ vs $T₀$ and $N_L$ vs $T₂$. The fact that this is a \(p\)-value follows from
+the uniformity of $\rank$ and of $\Gamma_d$ under $H₀$. Finally, to test
+pathways and groups of genes for specific enrichment of facilitators, we use the
+statistic $$ 1-\Gamma_{|P|} \left(-\sum_{g \in P} \log\left(p_g\right)
+\right).$$
+
+Similarly, to search for solution genes for condition $X$ we use the following
+statistic:
+$$ 1-\Gamma_{|G||\{N_H,T,C\}∖\{X\}|}\left(\sum_{i \in G}\left(-\ln\rank\left(1-Δ(X||T_2)\right)-\sum_{X' \in \{N_H,T,C\}∖\{X\}}\ln\rank\left(Δ(X'||T_2)\right)\right)\right). $$
+Again, this statistic intuitively searches for genes that are high in condition
+$X$ and low in the other conditions.
+
+- Multivariate Spearman's ρ for Aggregating Ranks Using Copulas, Justin Bedő, Cheng Soon Ong. JMLR 17(201):1–30, 2016.
+- The Statistical Analysis of Compositional Data, Aitchison, J. (1986). doi:10.1007/978-94-009-4109-0
+- Entropy Inference and the James–Stein Estimator, with Application to Nonlinear Gene Association Networks, Jean Hausser, Korbinian Strimmer. JMLR 10:1469–1484, 2009.
+
+* Differential analysis
+
+#+BEGIN_SRC R :results none
+  library(data.table)
+  library(MASS)
+  x <- fread("lib/Master_file_210616.csv")
+  colnames(x) <- gsub(" ", "_", colnames(x))
+#+END_SRC
+
+#+BEGIN_SRC R :results none
+  g <- function(a, b) {
+    r <- 2 * (a + b) * kl(a,b)
+  }
+  kl <- function(a, b) {
+    if(length(a) != length(b))
+      stop("vectors must be same length")
+
+    log0 <- function(x) ifelse(x == 0, 0, log(x))
+
+    Ra <- sum(a)
+    Rb <- sum(b)
+    phi <- ifelse(a == 0, 0, a/(a+b))
+    rho <- rep(Ra/(Ra+Rb), length(a))
+
+    r <- (phi * log0(phi / rho) + (1 - phi) * log0((1 - phi) / (1 - rho)))
+    r * sign(rho - phi)
+  }
+  js <- function(x){
+    n <- length(x)
+    m <- sum(x)
+    theta <- x/m
+    tg <- 1/n
+    lambda <- (1-sum(theta^2))/((m-1)*sum((tg-theta)^2))
+    (lambda*tg + (1-lambda)*theta)*m
+  }
+  gm <- function(x) {
+    x <- x[x != 0]
+    exp(mean(log(x)))
+  }
+  crank <- function(x) rank(x) / (1 + length(x))
+#+END_SRC
+
+#+BEGIN_SRC R :results none
+  ps <- rbind(c(5,6), cbind(6, 7:10))
+  ks <- apply(ps, 1, function(par) {
+    cols <- data.matrix(x[,par,with=F])
+    a <- cols[,1]
+    b <- cols[,2]
+    -pchisq(g(a, b), 1, lower.tail=F, log.p=T)
+  })
+  colnames(ks) <- apply(ps, 1, function(par) paste(colnames(x)[par[1]], colnames(x)[par[2]], sep="."))
+#+END_SRC
+
+#+BEGIN_SRC R :results none
+  ps <- rbind(c(5,6), cbind(6, 7:10))
+  gs <- apply(ps, 1, function(par) {
+    cols <- data.matrix(x[,par,with=F])
+    a <- js(cols[,1])/gm(js(cols[,1]))
+    b <- js(cols[,2])/gm(js(cols[,2]))
+    log(b)-log(a)
+  })
+  colnames(gs) <- apply(ps, 1, function(par) paste(colnames(x)[par[1]], colnames(x)[par[2]], sep="."))
+#+END_SRC
+
+#+BEGIN_SRC R
+  gscr <- -log(apply(cbind(-gs[,(1:2)], gs[,-(1:2)]), 2, crank))
+  y <- cbind(x[,c(1,3)], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol]
+  y <- y[n>2]
+  y$q <- p.adjust(y$p, 'BH')
+  y[order(p)][q<.05]
+#+END_SRC
+
+#+CAPTION: Facilitator genes
+#+ATTR_LATEX: :environment longtable :align lrrr
+#+RESULTS:
+| Gene        |                    p |  n |                    q |
+|-------------+----------------------+----+----------------------|
+| CCT3        | 4.25132497237628e-16 |  8 |  7.1800627458463e-12 |
+| HNRNPL      | 2.52247337164297e-12 |  9 |  2.1301026386839e-08 |
+| FRAP1       | 4.73591387901943e-09 | 10 | 2.66616165009197e-05 |
+| RBM8A       | 1.61323708109949e-08 |  3 | 5.62514333796213e-05 |
+| RPL26       | 1.72194300971864e-08 |  6 | 5.62514333796213e-05 |
+| TUBAL3      | 1.99839303853235e-08 |  5 | 5.62514333796213e-05 |
+| CACNB1      | 3.58512436928961e-08 |  6 | 8.64988078184746e-05 |
+| THOC4       | 1.06671815231583e-07 |  9 | 0.000225197535930776 |
+| MED28       | 1.71098537353348e-07 |  5 | 0.000321075910817856 |
+| GSPT1       | 5.57433624286558e-07 |  8 | 0.000941449648057568 |
+| SCRT2       | 8.53670232927075e-07 |  4 |  0.00127854099272805 |
+| WDR43       | 9.08431044628847e-07 |  6 |  0.00127854099272805 |
+| SF3A1       | 1.16647730821899e-06 |  8 |  0.00151543348142389 |
+| hCG_2004593 | 1.85998236020906e-06 |  4 |  0.00224380300582648 |
+| TBCD        | 2.20788739890746e-06 |  4 |  0.00243551641137369 |
+| GBP4        |  2.3073161573793e-06 |  6 |  0.00243551641137369 |
+| HNRNPU      | 2.99297130490863e-06 |  9 |  0.00291940829201364 |
+| PRPF40A     |  3.1114541569214e-06 |  9 |  0.00291940829201364 |
+| MCM6        | 3.30893447579919e-06 |  7 |  0.00294129444009329 |
+| MPHOSPH10   | 4.86948650152641e-06 |  5 |  0.00411203787621398 |
+| DHX15       | 5.59833948225841e-06 |  8 |  0.00450239788170772 |
+| RPS23       | 8.10317564128155e-06 |  6 |  0.00622066060934564 |
+| SNRPG       | 1.32019386414392e-05 |  5 |  0.00969424094414201 |
+| VBP1        | 2.05716560213353e-05 |  6 |   0.0144764457726805 |
+| C18ORF24    | 2.80549389871832e-05 |  4 |   0.0189527945821815 |
+| MDM2        | 2.94697946693518e-05 |  6 |   0.0191428985450263 |
+| SFRS7       | 4.01074877761597e-05 |  9 |   0.0234394916270119 |
+| DYNC1H1     | 4.06840999502746e-05 |  8 |   0.0234394916270119 |
+| NHP2L1      | 4.15491292474106e-05 |  9 |   0.0234394916270119 |
+| RPS16       | 4.16356651554478e-05 |  6 |   0.0234394916270119 |
+| PRKAR1A     | 4.71533122878019e-05 |  7 |   0.0256737254176351 |
+| RPA2        | 4.86446333924047e-05 |  8 |   0.0256737254176351 |
+| CCT7        | 5.05994991967188e-05 |  6 |   0.0258962103616177 |
+| NUP93       | 5.26103780470638e-05 |  4 |   0.0261334316128488 |
+| RPL28       | 6.53123479947876e-05 |  6 |   0.0315160070081134 |
+| PUF60       | 6.79657041376848e-05 |  5 |   0.0318853549217044 |
+| ITGB3       | 7.33666234685914e-05 |  8 |   0.0334888892908389 |
+| UBE2I       | 7.77502721555089e-05 |  6 |   0.0345559038535366 |
+| YAP1        | 8.07008452875013e-05 |  4 |   0.0349476045143746 |
+| RPS6KC1     | 0.000113030881309289 |  7 |   0.0477244638608147 |
+| SCAF1       | 0.000121344803061779 |  7 |   0.0490576665604241 |
+| ANAPC2      | 0.000121997868170869 |  7 |   0.0490576665604241 |
+
+#+BEGIN_SRC R
+  gscr <- -log(1-apply(cbind(gs[,3],-gs[,4],-gs[,5]), 2, crank))
+  y <- melt(cbind(x[,c(1,3)], gscr))[,.(p=pgamma(sum(value), length(value), 1, lower.tail=F),n=length(value)/3),by=gene.symbol]
+  y <- y[n>2]
+  y$q <- p.adjust(y$p, 'BH')
+  y[order(p)][1:10]
+#+END_SRC
+
+#+CAPTION: High-dose nutlin only
+#+RESULTS:
+| Gene      |                    p |  n |                    q |
+|-----------+----------------------+----+----------------------|
+| ZC3H18    | 1.74556934436433e-10 | 10 | 2.94809206569691e-06 |
+| USP28     |  5.8400432626132e-07 |  5 |  0.00493162453311372 |
+| TP53      | 2.64844807129072e-06 |  3 |    0.014909879825343 |
+| TP53BP1   | 2.94205639957365e-05 |  9 |    0.124220976330999 |
+| FSTL5     | 0.000107540292373829 |  6 |    0.322226225001099 |
+| SEMA4B    | 0.000114474353129646 |  6 |    0.322226225001099 |
+| IL18      | 0.000184187775774866 |  6 |    0.356218936627455 |
+| MOSC2     | 0.000187118031107206 |  5 |    0.356218936627455 |
+| PPP3CC    | 0.000205510114965315 |  7 |    0.356218936627455 |
+| C20orf201 | 0.000210917719597048 |  3 |    0.356218936627455 |
+
+#+BEGIN_SRC R
+  gscr <- -log(1-apply(cbind(-gs[,3],gs[,4],-gs[,5]), 2, crank))
+  y <- melt(cbind(x[,c(1,3)], gscr))[,.(p=pgamma(sum(value), length(value), 1, lower.tail=F),n=length(value)/3),by=gene.symbol]
+  y <- y[n>2]
+  y$q <- p.adjust(y$p, 'BH')
+  y[order(p)][1:10]
+#+END_SRC
+
+#+CAPTION: Tunicamycin only
+#+RESULTS:
+| Gene     |                    p | n |               q |
+|----------+----------------------+---+-----------------|
+| MFSD2    | 0.000259409153887513 | 4 | 0.9315149396484 |
+| YTHDC1   | 0.000477409968649423 | 7 | 0.9315149396484 |
+| H1FX     | 0.000855907114444036 | 4 | 0.9315149396484 |
+| EEF1D    | 0.000901872724233202 | 4 | 0.9315149396484 |
+| CATSPER3 | 0.000958132865153309 | 4 | 0.9315149396484 |
+| MIER3    |  0.00110400945478615 | 6 | 0.9315149396484 |
+| LDHAL6A  |  0.00126790312859389 | 5 | 0.9315149396484 |
+| CYC1     |  0.00128383143494892 | 5 | 0.9315149396484 |
+| GRIA4    |  0.00142848485552984 | 7 | 0.9315149396484 |
+| ADAMTS19 |  0.00153230912674702 | 5 | 0.9315149396484 |
+
+#+BEGIN_SRC R
+  gscr <- -log(1-apply(cbind(-gs[,3],-gs[,4],gs[,5]), 2, crank))
+  y <- melt(cbind(x[,c(1,3)], gscr))[,.(p=pgamma(sum(value), length(value), 1, lower.tail=F),n=length(value)/3),by=gene.symbol]
+  y <- y[n>2]
+  y$q <- p.adjust(y$p, 'BH')
+  y[order(p)][1:10]
+#+END_SRC
+
+#+CAPTION: CDK4i only
+#+RESULTS:
+| Gene     |                    p | n |                    q |
+|----------+----------------------+---+----------------------|
+| RB1      | 2.16265514791209e-18 | 8 | 3.65250827930874e-14 |
+| RNF31    | 1.99092506546457e-06 | 4 |   0.0168123667153156 |
+| BPGM     | 2.40528524362958e-05 | 6 |    0.135409541598867 |
+| BAZ1A    | 3.70975382909565e-05 | 5 |    0.155782834829689 |
+| EYA1     | 6.07952530598099e-05 | 5 |    0.155782834829689 |
+| CACNG5   | 7.85050763076482e-05 | 5 |    0.155782834829689 |
+| C14ORF45 | 8.68948169782902e-05 | 9 |    0.155782834829689 |
+| BCL2L10  | 8.79785884178812e-05 | 5 |    0.155782834829689 |
+| RFX6     | 9.04210775970524e-05 | 4 |    0.155782834829689 |
+| KCTD19   | 0.000104855512049696 | 6 |    0.155782834829689 |
+
+#+BEGIN_SRC R :results graphics :file facilitators.svg :width 10 :height 6
+  library(cowplot)
+  library(ggplot2)
+
+  gl <- c("FRAP1", "CCT3", "HNRNPL", "TP53", "RB1", "MFSD2")
+
+  id <- function(x) x
+
+  z <- melt(data.table(x[,c(1,3)], -log(1-apply(gs,2,crank))))
+  ref <- melt(data.table(x[,c(1,3)], pmax(-log(1-crank(gs[,1])),-log(1-crank(gs[,2])))))
+  ref1 <- melt(data.table(x[,c(1,3)], crank(gs[,1])))
+  setkey(ref,pool.id.number)
+  setkey(ref1,pool.id.number)
+  z$variable <- factor(z$variable, labels=c("T2", "Low-dose Nutlin", "High-dose Nutlin", "Tunicamycin", "CDK4i"))
+  #z[,value:=value-ifelse(variable == "High-dose Nutlin", ref1[pool.id.number,value], ref[pool.id.number,value])]
+  #z[,value:=value-ref1[pool.id.number,value])]
+
+  gg <- lapply(gl, function(g) {
+    ggplot(z[gene.symbol==g], aes(pool.id.number,value)) +
+      geom_point() +
+      facet_grid(gene.symbol~variable)+
+      theme(strip.background = element_blank(),
+            panel.grid.major = element_blank(),
+            panel.grid.minor=element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.text.x=element_blank())+
+      #ylim(c(0,12))+
+      geom_hline(yintercept=0, colour='grey', linetype='dashed') +
+      ylab("-log(rank)") + xlab("Hairpins")
+  })
+  gg[-1] <- lapply(gg[-1], function(x) x + theme(strip.background = element_blank(), strip.text.x = element_blank()))
+  gg[-length(gg)] <- lapply(gg[-length(gg)], function(x) x + theme(axis.title.x = element_blank()))
+
+  do.call(function(...) plot_grid(..., ncol=1), gg)
+#+END_SRC
+
+#+CAPTION: Plot of key genes in various conditions
+#+RESULTS:
+[[file:facilitators.svg]]
+
+* Pathways
+
+The pathway analysis here is similar to the preceding analysis, except that
+instead of aggregating into genes we aggregate into pathways (from reactome).
+This results in a biased distribution due to the overlapping groups, thus we
+approximate a \(p\)-values by fitting a gamma distribution.
+
+#+BEGIN_SRC R
+  library(MASS)
+  ppi <- sapply(scan("PathwayCommons9.reactome.hgnc.gmt", "string", sep='\n'), strsplit, "\t")
+  ns <- sapply(ppi, function(x) gsub("^name: ([^;]*);.*", "\\1", x[2]))
+  ppi <- lapply(ppi, function(x) x[-(1:2)])
+  names(ppi) <- ns
+  ppi <- data.table(melt(ppi))
+  colnames(ppi) <- c("gene.symbol", "desc")
+
+  gscr <- -log(apply(cbind(-gs[,1:2], gs[,3:5]), 2, crank))
+  y <- cbind(x[,c(1,3)], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol]
+  y <- y[n>2]
+  y <- na.omit(ppi[y,,on="gene.symbol"])[,.(p=pgamma(sum(-log(1-p)), length(p), 1, lower.tail=T)),by=desc][order(p)]
+  y$q <- p.adjust(y$p)
+  y[order(p)][1:10]
+#+END_SRC
+
+#+CAPTION: Enriched pathways – Low-dose nutlin included 
+#+RESULTS:
+| Pathway                                                                      |                    p |                    q |
+|------------------------------------------------------------------------------+----------------------+----------------------|
+| GTP hydrolysis and joining of the 60S ribosomal subunit                      | 7.42518744947364e-29 | 1.14570642345378e-25 |
+| Formation of a pool of free 40S subunits                                     | 1.28489339868856e-28 | 1.98130562077776e-25 |
+| L13a-mediated translational silencing of Ceruloplasmin expression            | 1.69768037708585e-28 | 2.61612546108929e-25 |
+| Nonsense Mediated Decay (NMD) independent of the Exon Junction Complex (EJC) | 8.51874500824371e-25 | 1.31188673126953e-21 |
+| Peptide chain elongation                                                     | 1.47767766581488e-23 |  2.2741459276891e-20 |
+| SRP-dependent cotranslational protein targeting to membrane                  | 2.41362994411095e-22 | 3.71216285404265e-19 |
+| Eukaryotic Translation Termination                                           | 2.54979759672558e-22 | 3.91903890616722e-19 |
+| Viral mRNA Translation                                                       | 9.42935871931449e-22 | 1.44834949928671e-18 |
+| Selenocysteine synthesis                                                     | 5.14678460980762e-19 |  7.9003143760547e-16 |
+| Nonsense Mediated Decay (NMD) enhanced by the Exon Junction Complex (EJC)    | 4.73013107802171e-16 |  7.2560210736853e-13 |
+
+* GO terms
+
+#+BEGIN_SRC R 
+  library(limma)
+  x$unified.symbol <- alias2SymbolTable(x$gene.symbol)
+
+  gscr <- -log(apply(cbind(-gs[,1:2], gs[,3:5]), 2, crank))
+  y <- cbind(x[,1], unified.symbol=x$unified.symbol, g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=unified.symbol]
+
+  y <- y[n>2]
+  go <- fread("go.tsv", header=F)
+  colnames(go) <- c("unified.symbol", "goid")
+  y <- na.omit(go[y,,on='unified.symbol'])[, .(p=pgamma(sum(-log(1-p)), length(p), 1, lower.tail=T)),by=goid]
+  y$q <- p.adjust(y$p, 'BH')
+  godesc <- fread("go-desc.tsv", header=F)
+  colnames(godesc) <- c("goid", "desc")
+  y <- na.omit(y[godesc,,on="goid"])
+  y[order(p)][q<.001]
+#+END_SRC
+
+#+ATTR_HTML: :class dataTable
+#+ATTR_LATEX: :environment longtable :align lp{6cm}rr
+#+CAPTION: Enriched GO terms – Low-dose nutlin included
+#+RESULTS:
+| GO term    |                    p |                    q | Description                                                                                                           |
+|------------+----------------------+----------------------+-----------------------------------------------------------------------------------------------------------------------|
+| GO:0000398 | 3.01300318317278e-41 | 3.51225781062451e-37 | mRNA splicing, via spliceosome                                                                                        |
+| GO:0006413 | 4.67102294420994e-37 | 2.72250572303277e-33 | translational initiation                                                                                              |
+| GO:0006412 | 1.02373106784748e-30 | 3.97787768596604e-27 | translation                                                                                                           |
+| GO:0006614 | 1.28113960318568e-23 | 3.73356108858386e-20 | SRP-dependent cotranslational protein targeting to membrane                                                           |
+| GO:0006364 | 4.52729029121518e-20 | 1.05549245849391e-16 | rRNA processing                                                                                                       |
+| GO:0019083 | 3.89986439078054e-19 | 7.57678653388813e-16 | viral transcription                                                                                                   |
+| GO:0031145 | 1.89422324802628e-14 | 2.92367800124636e-11 | anaphase-promoting complex-dependent catabolic process                                                                |
+| GO:0000387 | 2.00647027622638e-14 | 2.92367800124636e-11 | spliceosomal snRNP assembly                                                                                           |
+| GO:0008334 |  1.4978134801299e-13 | 1.94000130420825e-10 | histone mRNA metabolic process                                                                                        |
+| GO:0000027 | 2.02766031746839e-13 |  2.3636436320729e-10 | ribosomal large subunit assembly                                                                                      |
+| GO:0010972 | 2.67642370681323e-11 |  2.8362791954838e-08 | negative regulation of G2/M transition of mitotic cell cycle                                                          |
+| GO:0043161 | 7.89636795283307e-11 | 7.67066343551459e-08 | proteasome-mediated ubiquitin-dependent protein catabolic process                                                     |
+| GO:0000184 | 6.16376608535264e-10 | 5.52700163515044e-07 | nuclear-transcribed mRNA catabolic process, nonsense-mediated decay                                                   |
+| GO:0030490 | 8.34249271437698e-10 | 6.94631696939231e-07 | maturation of SSU-rRNA                                                                                                |
+| GO:0051436 | 1.09351604462723e-09 | 8.49807768814639e-07 | negative regulation of ubiquitin-protein ligase activity involved in mitotic cell cycle                               |
+| GO:0042273 | 2.51659937671125e-09 | 1.83349993339519e-06 | ribosomal large subunit biogenesis                                                                                    |
+| GO:0072382 | 3.31034708363331e-09 | 2.20826192549595e-06 | minus-end-directed vesicle transport along microtubule                                                                |
+| GO:0051437 |  3.7247396507166e-09 | 2.20826192549595e-06 | positive regulation of ubiquitin-protein ligase activity involved in regulation of mitotic cell cycle transition      |
+| GO:0043610 | 4.73591388328032e-09 | 2.20826192549595e-06 | regulation of carbohydrate utilization                                                                                |
+| GO:1904056 | 4.73591388328032e-09 | 2.20826192549595e-06 | positive regulation of cholangiocyte proliferation                                                                    |
+| GO:1904193 | 4.73591388328032e-09 | 2.20826192549595e-06 | negative regulation of cholangiocyte apoptotic process                                                                |
+| GO:1904197 | 4.73591388328032e-09 | 2.20826192549595e-06 | positive regulation of granulosa cell proliferation                                                                   |
+| GO:1904206 | 4.73591388328032e-09 | 2.20826192549595e-06 | positive regulation of skeletal muscle hypertrophy                                                                    |
+| GO:1904213 | 4.73591388328032e-09 | 2.20826192549595e-06 | negative regulation of iodide transmembrane transport                                                                 |
+| GO:1904690 | 4.73591388328032e-09 | 2.20826192549595e-06 | positive regulation of cytoplasmic translational initiation                                                           |
+| GO:0043488 | 1.57535969836756e-08 | 7.06306461687331e-06 | regulation of mRNA stability                                                                                          |
+| GO:1902167 | 1.72194301040207e-08 | 7.16881774009177e-06 | positive regulation of intrinsic apoptotic signaling pathway in response to DNA damage by p53 class mediator          |
+| GO:1904803 | 1.72194301040207e-08 | 7.16881774009177e-06 | regulation of translation involved in cellular response to UV                                                         |
+| GO:0006406 | 2.30769666592433e-08 | 9.27614483954479e-06 | mRNA export from nucleus                                                                                              |
+| GO:0000462 | 1.52360176678139e-07 | 5.92020859845687e-05 | maturation of SSU-rRNA from tricistronic rRNA transcript (SSU-rRNA, 5.8S rRNA, LSU-rRNA)                              |
+| GO:0000375 | 2.18799881967329e-07 | 8.22758136804243e-05 | RNA splicing, via transesterification reactions                                                                       |
+| GO:0016925 | 2.31101145883756e-07 |  8.4185814298967e-05 | protein sumoylation                                                                                                   |
+| GO:0001193 |  3.9305668958501e-07 | 0.000138844297893711 | maintenance of transcriptional fidelity during DNA-templated transcription elongation from RNA polymerase II promoter |
+| GO:0002181 | 4.95210705059768e-07 | 0.000169784446731815 | cytoplasmic translation                                                                                               |
+| GO:0097647 | 5.54987262840772e-07 | 0.000184842472083854 | amylin receptor signaling pathway                                                                                     |
+| GO:0038061 | 7.79644131917446e-07 | 0.000252453101271157 | NIK/NF-kappaB signaling                                                                                               |
+| GO:0006361 |  1.2594821727272e-06 | 0.000392095491022084 | transcription initiation from RNA polymerase I promoter                                                               |
+| GO:0006260 | 1.27817008311222e-06 | 0.000392095491022084 | DNA replication                                                                                                       |
+| GO:0000245 | 1.47778359411717e-06 | 0.000441705727092919 | spliceosomal complex assembly                                                                                         |
+| GO:0002183 | 2.64973990016544e-06 | 0.000772200450405712 | cytoplasmic translational initiation                                                                                  |
+| GO:0038095 | 2.76336509680573e-06 |  0.00078238946149844 | Fc-epsilon receptor signaling pathway                                                                                 |
+| GO:0071108 | 2.81893775267517e-06 |  0.00078238946149844 | protein K48-linked deubiquitination                                                                                   |
+| GO:1902889 | 2.99297130490483e-06 | 0.000792933329574447 | protein localization to spindle microtubule                                                                           |
+| GO:1990280 | 2.99297130490483e-06 | 0.000792933329574447 | RNA localization to chromatin                                                                                         |
+| GO:0000463 | 3.21225386366711e-06 | 0.000832116517528166 | maturation of LSU-rRNA from tricistronic rRNA transcript (SSU-rRNA, 5.8S rRNA, LSU-rRNA)                              |
+
+#+BEGIN_SRC R 
+  gscr <- -log(apply(cbind(-gs[,1:2], gs[,3:5]), 2, crank))
+  y <- cbind(x[,c(1,3)], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol]
+  y <- y[n>2]
+  go <- fread("go.tsv", header=F)
+  colnames(go) <- c("gene.symbol", "goid")
+  y <- na.omit(go[y,,on='gene.symbol'])[, .(p=pgamma(sum(-log(1-p)), length(p), 1, lower.tail=F)),by=goid]
+  y$q <- p.adjust(y$p, 'BH')
+  godesc <- fread("go-desc.tsv", header=F)
+  colnames(godesc) <- c("goid", "desc")
+  y <- na.omit(y[godesc,,on="goid"])
+  y[order(p)][q<.001]
+#+END_SRC
+
+#+ATTR_HTML: :class dataTable
+#+ATTR_LATEX: :environment longtable :align lp{6cm}rr
+#+CAPTION: Depleted GO terms – Low-dose nutlin included
+#+RESULTS:
+| GO term    |                    p |                    q | Description                                                                    |
+|------------+----------------------+----------------------+--------------------------------------------------------------------------------|
+| GO:2000042 |  6.9773230148074e-15 | 7.97717340282930e-11 | negative regulation of double-strand break repair via homologous recombination |
+| GO:0000077 |  5.1324475590191e-12 | 2.79919892530821e-08 | DNA damage checkpoint                                                          |
+| GO:0045830 | 7.34505097168251e-12 | 2.79919892530821e-08 | positive regulation of isotype switching                                       |
+| GO:0046856 |  7.6247111944618e-11 | 2.17933307715704e-07 | phosphatidylinositol dephosphorylation                                         |
+| GO:0051013 | 1.97694046969247e-07 | 0.000452047207799879 | microtubule severing                                                           |
+| GO:0071727 | 2.76773696440176e-07 | 0.000527392278566755 | cellular response to triacyl bacterial lipopeptide                             |
+| GO:0006656 | 4.86122738636733e-07 | 0.000720959847552813 | phosphatidylcholine biosynthetic process                                       |
+| GO:0006470 | 5.04476408678606e-07 | 0.000720959847552813 | protein dephosphorylation                                                      |
+| GO:0006974 | 6.51703787735041e-07 | 0.000827881045019414 | cellular response to DNA damage stimulus                                       |
+
+* DNA repair
+
+#+BEGIN_SRC R :colnames yes
+  gscr <- -log(apply(cbind(-gs[,1:2], gs[,3:5]), 2, crank))
+  y <- cbind(x[,c(1,3)], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol]
+  y <- y[n>2]
+  repair <- fread("dna-repair.csv", na.strings = "")
+  mrepair <- melt(repair, measure.vars = colnames(repair), na.rm = T, variable.name="Group")
+  ps <- mrepair[, .(p=pgamma(sum(-log(1-y[gene.symbol %in% value]$p)), length(value), 1, lower.tail=T)),by=Group]
+  ps[,q:=p.adjust(p, 'BH')]
+  ps[order(p)]
+#+END_SRC
+
+#+CAPTION: Enriched DNA repair genes – Low-dose nutlin included
+#+ATTR_LATEX: :environment longtable :align p{8cm}rr
+#+RESULTS:
+| Group                                                                          |                    p |                    q |
+|--------------------------------------------------------------------------------+----------------------+----------------------|
+| Homologous recombination                                                       | 2.68261782692893e-06 | 5.09697387116497e-05 |
+| Fanconi anemia                                                                 |   0.0104651678257329 |    0.099419094344463 |
+| Non-homologous end-joining                                                     |   0.0342169781733992 |     0.20673341436949 |
+| Direct reversal of damage                                                      |   0.0503853006004256 |     0.20673341436949 |
+| Other identified genes with known or suspected DNA repair function             |   0.0544035300972343 |     0.20673341436949 |
+| Genes defective in diseases associated with sensitivity to DNA damaging agents |   0.0739271553915462 |    0.213989442187764 |
+| Editing and processing nucleases                                               |   0.0788382155428603 |    0.213989442187764 |
+| Repair of DNA-topoisomerase crosslinks                                         |    0.147289509574734 |    0.312541569153584 |
+| Modulation of nucleotide pools                                                 |     0.16520581724231 |    0.312541569153584 |
+| Ubiquitination and modification                                                |    0.172275228473415 |    0.312541569153584 |
+| Chromatin Structure and Modification                                           |    0.180945118983654 |    0.312541569153584 |
+| Nucleotide excision repair (NER)                                               |    0.265757425621236 |    0.420782590566958 |
+| Mismatch Repair (MMR)                                                          |    0.335584863702401 |    0.490470185411201 |
+| Rad6 Pathway                                                                   |    0.451451360318183 |    0.611117450058562 |
+| Repair of DNA-protein crosslinks                                               |    0.491030956591472 |    0.611117450058562 |
+| Poly(ADP-ribose) polymerase (PARP) enzymes that bind to DNA                    |    0.514625221101947 |    0.611117450058562 |
+| Base excision repair (BER)                                                     |    0.549459750608453 |    0.614102074209448 |
+| Other BER and strand break joining factors                                     |    0.802328337161501 |    0.846902133670473 |
+| Other conserved DNA damage response genes                                      |    0.999988407379511 |    0.999988407379511 |
+
+#+RESULTS:
+
+#+BEGIN_SRC R :colnames yes
+  gscr <- -log(apply(cbind(-gs[,1:2], gs[,3:5]), 2, crank))
+  y <- cbind(x[,c(1,3)], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol]
+  y <- y[n>2]
+  repair <- fread("dna-repair.csv", na.strings = "")
+  mrepair <- melt(repair, measure.vars = colnames(repair), na.rm = T, variable.name="Group")
+  ps <- mrepair[, .(p=pgamma(sum(-log(1-y[gene.symbol %in% value]$p)), length(value), 1, lower.tail=F)),by=Group]
+  ps[,q:=p.adjust(p, 'BH')]
+  ps[order(p)]
+#+END_SRC
+
+#+CAPTION: Depleted DNA repair genes – Low-dose nutlin included
+#+ATTR_LATEX: :environment longtable :align p{8cm}rr
+#+RESULTS:
+| Group                                                                          |                    p |                    q |
+|--------------------------------------------------------------------------------+----------------------+----------------------|
+| Other conserved DNA damage response genes                                      | 1.15926204886529e-05 | 0.000220259789284404 |
+| Other BER and strand break joining factors                                     |    0.197671662838499 |    0.999997317382173 |
+| Base excision repair (BER)                                                     |    0.450540249391547 |    0.999997317382173 |
+| Poly(ADP-ribose) polymerase (PARP) enzymes that bind to DNA                    |    0.485374778898053 |    0.999997317382173 |
+| Repair of DNA-protein crosslinks                                               |    0.508969043408528 |    0.999997317382173 |
+| Rad6 Pathway                                                                   |    0.548548639681817 |    0.999997317382173 |
+| Mismatch Repair (MMR)                                                          |    0.664415136297599 |    0.999997317382173 |
+| Nucleotide excision repair (NER)                                               |    0.734242574378764 |    0.999997317382173 |
+| Chromatin Structure and Modification                                           |    0.819054881016346 |    0.999997317382173 |
+| Ubiquitination and modification                                                |    0.827724771526585 |    0.999997317382173 |
+| Modulation of nucleotide pools                                                 |     0.83479418275769 |    0.999997317382173 |
+| Repair of DNA-topoisomerase crosslinks                                         |    0.852710490425266 |    0.999997317382173 |
+| Editing and processing nucleases                                               |     0.92116178445714 |    0.999997317382173 |
+| Genes defective in diseases associated with sensitivity to DNA damaging agents |    0.926072844608454 |    0.999997317382173 |
+| Other identified genes with known or suspected DNA repair function             |    0.945596469902766 |    0.999997317382173 |
+| Direct reversal of damage                                                      |    0.949614699399574 |    0.999997317382173 |
+| Non-homologous end-joining                                                     |    0.965783021826601 |    0.999997317382173 |
+| Fanconi anemia                                                                 |    0.989534832174267 |    0.999997317382173 |
+| Homologous recombination                                                       |    0.999997317382173 |    0.999997317382173 |
+
+* KEGG
+
+#+BEGIN_SRC R :colnames yes
+  library(KEGGREST)
+  library(limma)
+
+  fetchKegg <- function(x) {
+    kg <- keggGet(paste("hsa", sprintf("%05i", x), sep=''))[[1]]
+    n <- kg$NAME
+    g <- kg$GENE
+    g <- g[seq(2,length(g),2)]
+    g <- gsub(";.*$", "", g)
+    list(n=n,g=na.omit(alias2SymbolTable(g)))
+  }
+  keggGroups <- c(04014
+                 ,04010
+                 ,04012
+                 ,04310
+                 ,04330
+                 ,04340
+                 ,04350
+                 ,04390
+                 ,04630
+                 ,04668
+                 ,04151
+                 ,04152
+                 ,04150
+                 ,03410
+                 ,03420
+                 ,03430
+                 ,03440
+                 ,03450
+                 ,03460)
+
+  gscr <- -log(apply(cbind(-gs[,1:2], gs[,3:5]), 2, crank))
+  y <- cbind(x[,.(pool.id.number, gene.symbol=alias2SymbolTable(gene.symbol))], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol]
+  #y <- y[n>2]
+  #y$gene.symbol <- alias2SymbolTable(y$gene.symbol)
+  y <- na.omit(y)
+  y[,q:=p.adjust(p,'BH')]
+  y$gene.symbol <- factor(y$gene.symbol, sort(y$gene.symbol, decreasing=T))
+
+  calc <- function(z){
+    fk <- fetchKegg(z)
+    grp <- fk$g
+    msk <- alias2SymbolTable(y$gene.symbol)%in% alias2SymbolTable(grp)
+    c(fk$n, pgamma(sum(-log(y[msk,p])), sum(msk), 1, lower.tail=F))
+  }
+
+  p <- t(sapply(keggGroups, calc))
+  p <- cbind(keggGroups, p)
+  colnames(p) <- c("KEGG ID", "Name", "p")
+  p <- data.table(p)
+  p[,q:=p.adjust(p,'BH')]
+#+END_SRC
+
+#+CAPTION: Enrichment of facilitators using ρ (some facilitators)
+#+RESULTS:
+| KEGG ID | Name                       |                    p |                    q |
+|---------+----------------------------+----------------------+----------------------|
+|    4150 | mTOR signaling pathway     | 1.07169224651158e-07 |   2.036215268372e-06 |
+|    4012 | ErbB signaling pathway     |  3.2633539672252e-06 | 3.10018626886394e-05 |
+|    3420 | Nucleotide excision repair | 2.52856304903591e-05 | 0.000160142326438941 |
+|    3460 | Fanconi anemia pathway     | 0.000114873044396478 | 0.000545646960883271 |
+|    4151 | PI3K-Akt signaling pathway | 0.000496373903490404 |  0.00188622083326353 |
+|    3440 | Homologous recombination   | 0.000869524341461049 |  0.00275349374795999 |
+|    4630 | Jak-STAT signaling pathway |  0.00272818293725603 |   0.0069006839769504 |
+|    3430 | Mismatch repair            |  0.00290555114818964 |   0.0069006839769504 |
+|    4010 | MAPK signaling pathway     |  0.00444118132807601 |  0.00937582724816047 |
+|    4668 | TNF signaling pathway      |   0.0106912993137484 |    0.020313468696122 |
+|    4152 | AMPK signaling pathway     |   0.0258665985650557 |   0.0445672189498995 |
+|    3450 | Non-homologous end-joining |   0.0281477172315155 |   0.0445672189498995 |
+|    4014 | Ras signaling pathway      |   0.0320751111871915 |    0.046879008658203 |
+|    4330 | Notch signaling pathway    |   0.0668109023554859 |   0.0906719389110166 |
+|    4390 | Hippo signaling pathway    |   0.0968619609509497 |    0.122691817204536 |
+|    4310 | Wnt signaling pathway      |    0.145620694099906 |    0.172924574243638 |
+|    4350 | TGF-beta signaling pathway |    0.263464271501597 |    0.294460068148844 |
+|    3410 | Base excision repair       |    0.503569362960776 |    0.531545438680819 |
+|    4340 | Hedgehog signaling pathway |    0.536974423142947 |    0.536974423142947 |
+
+#+BEGIN_SRC R :results graphics :file mtor-kegg-pathway.svg :height 10
+  gg <- scan("lib/mtor-pathway-positive-regulators.csv", what=character())
+  gscr <- -log(apply(cbind(-gs[,(1:2)], gs[,-(1:2)]), 2, crank))
+  y <- cbind(x[,c(1,3)], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol][gene.symbol %in% gg]
+  y[,q:=p.adjust(p, 'BH')]
+  ggplot(y[gene.symbol %in% gg], aes(reorder(gene.symbol,-log10(p)),-log10(p),fill=factor((q<.1)+(q<.05),levels=0:2,ordered=T))) + geom_bar(stat="identity") + coord_flip() + theme_minimal() + theme(legend.position='none')+xlab("Gene")
+#+END_SRC
+
+#+RESULTS:
+[[file:mtor-kegg-pathway.svg]]
+
+#+BEGIN_SRC R :results graphics :file mtor-kegg-pathway-depleted.svg :height 10
+  gg <- scan("lib/mtor-pathway-negative-regulators.csv", what=character())
+  gscr <- -log(apply(cbind(-gs[,(1:2)], gs[,-(1:2)]), 2, crank))
+  y <- cbind(x[,c(1,3)], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol][gene.symbol %in% gg]
+  y[,q:=p.adjust(1-p, 'BH')]
+  ggplot(y[gene.symbol %in% gg], aes(reorder(gene.symbol,-log10(1-p)),-log10(1-p),fill=factor((q<.1)+(q<.05), levels=0:2, ordered=T))) + geom_bar(stat="identity") + coord_flip() + theme_minimal() + theme(legend.position='none')+xlab("Gene")+scale_fill_discrete(drop=F)
+#+END_SRC
+
+#+RESULTS:
+[[file:mtor-kegg-pathway-depleted.svg]]
+
+#+BEGIN_SRC R :colnames yes
+  library(limma)
+
+  gscr <- -log(apply(cbind(-gs[,1:2], gs[,3:5]), 2, crank))
+  y <- cbind(x[,.(pool.id.number, gene.symbol=alias2SymbolTable(gene.symbol))], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol]
+  y <- na.omit(y)
+  y$gene.symbol <- factor(y$gene.symbol, sort(y$gene.symbol, decreasing=T))
+
+  calc <- function(grp, dir=F){
+    msk <- alias2SymbolTable(y$gene.symbol)%in% alias2SymbolTable(grp)
+    pgamma(sum(-log(y[msk,p])), sum(msk), 1, lower.tail=dir)
+  }
+
+  gp <- scan("lib/mtor-pathway-positive-regulators.csv", what=character())
+  gn <- scan("lib/mtor-pathway-negative-regulators.csv", what=character())
+  p <- data.table(n=c("pos","neg"), p=c(calc(gp), calc(gn, dir=T)))
+  p[,q:=p.adjust(p,'BH')]
+#+END_SRC
+
+#+RESULTS:
+| n   |                    p |                    q |
+|-----+----------------------+----------------------|
+| pos | 0.000450330545245885 | 0.000900661090491769 |
+| neg |   0.0961496630187963 |   0.0961496630187963 |
+
+T2 enrichment of negative regulators and depletion of positive:
+
+#+BEGIN_SRC R :results graphics :file mtor-kegg-pathway-t2-neg-enriched.svg :height 10
+  gg <- scan("lib/mtor-pathway-negative-regulators.csv", what=character())
+  gscr <- -log(apply(cbind(gs[,1,drop=F]), 2, crank))
+  y <- cbind(x[,c(1,3)], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol][gene.symbol %in% gg]
+  y[,q:=p.adjust(p, 'BH')]
+  ggplot(y[gene.symbol %in% gg], aes(reorder(gene.symbol,-log10(p)),-log10(p),fill=factor((q>.1)+(q>.05)))) + geom_bar(stat="identity") + coord_flip() + theme_minimal() + theme(legend.position='none')+xlab("Gene")
+#+END_SRC
+
+#+RESULTS:
+[[file:mtor-kegg-pathway-t2-neg-enriched.svg]]
+
+#+BEGIN_SRC R :results graphics :file mtor-kegg-pathway-t2-pos-depl.svg :height 10
+  gg <- scan("lib/mtor-pathway-positive-regulators.csv", what=character())
+  gscr <- -log(apply(cbind(gs[,1,drop=F]), 2, crank))
+  y <- cbind(x[,c(1,3)], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol][gene.symbol %in% gg]
+  y[,q:=p.adjust(p, 'BH')]
+  ggplot(y[gene.symbol %in% gg], aes(reorder(gene.symbol, -log10(1-p)),-log10(1-p),fill=factor((q<.1)+(q<.05)))) + geom_bar(stat="identity") + coord_flip() + theme_minimal() + theme(legend.position='none')+xlab("Gene")
+#+END_SRC
+
+#+RESULTS:
+[[file:mtor-kegg-pathway-t2-pos-depl.svg]]
+
+#+BEGIN_SRC R :colnames yes
+  library(limma)
+
+  gscr <- -log(apply(cbind(gs[,1,drop=F]), 2, crank))
+  y <- cbind(x[,.(pool.id.number, gene.symbol=alias2SymbolTable(gene.symbol))], g=-pgamma(apply(gscr,1,sum),ncol(gscr),1,lower.tail=T,log=T))[,.(p=pgamma(sum(g), length(g), 1, lower.tail=F),n=length(g)),by=gene.symbol]
+  y <- na.omit(y)
+  y$gene.symbol <- factor(y$gene.symbol, sort(y$gene.symbol, decreasing=T))
+
+  calc <- function(grp, dir=F){
+    msk <- alias2SymbolTable(y$gene.symbol)%in% alias2SymbolTable(grp)
+    pgamma(sum(-log(y[msk,p])), sum(msk), 1, lower.tail=dir)
+  }
+
+  gp <- scan("lib/mtor-pathway-positive-regulators.csv", what=character())
+  gn <- scan("lib/mtor-pathway-negative-regulators.csv", what=character())
+  p <- data.table(n=c("pos depleted","neg enriched"), p=c(calc(gp, dir=T), calc(gn, dir=F)))
+  p[,q:=p.adjust(p,'BH')]
+#+END_SRC
+
+#+RESULTS:
+| n            |                  p |                  q |
+|--------------+--------------------+--------------------|
+| pos depleted | 0.0224314817266217 | 0.0448629634532433 |
+| neg enriched | 0.0707132224958546 | 0.0707132224958546 |

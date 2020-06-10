@@ -1,0 +1,5 @@
+#+ATTR_HTML: :class dataTable
+#+HTML_HEAD: <link rel="stylesheet" type="text/css" href="http://cdn.datatables.net/1.10.16/css/jquery.dataTables.css">
+#+HTML_HEAD: <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+#+HTML_HEAD: <script type="text/javascript" charset="utf8" src="http://cdn.datatables.net/1.10.16/js/jquery.dataTables.js"></script>
+#+HTML_HEAD: <script type="text/javascript">$(document).ready( function () {$('.dataTable').DataTable({"aaSorting":[[2,"desc"]]});});</script>
